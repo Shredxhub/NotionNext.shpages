@@ -117,49 +117,114 @@ const CustomCollection = (props) => {
   // 检测是否为 map view（支持多种可能的类型名称）
   const isMapView = viewType === 'map' || viewType === 'map_view' || viewType === 'map-view'
   
-  // 监听控制台的 "unsupported collection view" 消息
+  const [shouldRenderIframe, setShouldRenderIframe] = useState(false)
+  const containerRef = useRef(null)
+  const observerRef = useRef(null)
+  const fallbackTimerRef = useRef(null)
+  
+  // 使用 MutationObserver 监听 DOM 变化，检测 unsupported view
   useEffect(() => {
     if (!isBrowser || !collectionPageId || collectionView) return
+    if (shouldRenderIframe) return // 如果已经决定渲染 iframe，不再监听
     
-    // 拦截 console.log 来检测 unsupported view
-    const originalLog = console.log
-    const originalWarn = console.warn
-    const originalError = console.error
+    const container = containerRef.current
+    if (!container) return
     
-    const checkForUnsupported = (args) => {
-      const message = args?.[0]?.toString() || ''
-      if (message.includes('unsupported collection view') || message.includes('Unsupported collection view')) {
-        console.log('[CustomCollection] Detected unsupported view from console, will render iframe')
-        // 使用 setTimeout 避免在渲染过程中更新状态
-        setTimeout(() => {
-          setShouldRenderIframe(true)
-        }, 100)
+    console.log('[CustomCollection] Setting up MutationObserver for unsupported view detection')
+    
+    // 检查函数
+    const checkForUnsupported = (target) => {
+      if (!target) return false
+      
+      // 检查文本内容
+      const text = target.textContent || ''
+      if (text.includes('unsupported') || text.includes('Unsupported')) {
+        console.log('[CustomCollection] Detected unsupported view in DOM:', text.substring(0, 100))
+        return true
       }
+      
+      // 检查是否有特定的类名或属性
+      if (target.classList) {
+        const classList = Array.from(target.classList)
+        if (classList.some(cls => cls.includes('unsupported') || cls.includes('error'))) {
+          console.log('[CustomCollection] Detected unsupported view via class:', classList)
+          return true
+        }
+      }
+      
+      return false
     }
     
-    console.log = (...args) => {
-      checkForUnsupported(args)
-      originalLog.apply(console, args)
+    // 创建 MutationObserver
+    observerRef.current = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        // 检查新增的节点
+        if (mutation.addedNodes) {
+          for (const node of mutation.addedNodes) {
+            if (node.nodeType === Node.ELEMENT_NODE) {
+              if (checkForUnsupported(node)) {
+                console.log('[CustomCollection] MutationObserver detected unsupported view, will render iframe')
+                setShouldRenderIframe(true)
+                return
+              }
+              
+              // 检查子节点
+              const unsupportedChild = node.querySelector && node.querySelector('[class*="unsupported"], [class*="error"]')
+              if (unsupportedChild || checkForUnsupported(node)) {
+                console.log('[CustomCollection] MutationObserver detected unsupported view in child, will render iframe')
+                setShouldRenderIframe(true)
+                return
+              }
+            }
+          }
+        }
+        
+        // 检查文本变化
+        if (mutation.type === 'characterData' || mutation.type === 'childList') {
+          if (checkForUnsupported(mutation.target)) {
+            console.log('[CustomCollection] MutationObserver detected unsupported view in text, will render iframe')
+            setShouldRenderIframe(true)
+            return
+          }
+        }
+      }
+    })
+    
+    // 开始观察
+    observerRef.current.observe(container, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ['class']
+    })
+    
+    // 立即检查一次（可能已经渲染了）
+    if (checkForUnsupported(container)) {
+      console.log('[CustomCollection] Initial check detected unsupported view, will render iframe')
+      setShouldRenderIframe(true)
     }
     
-    console.warn = (...args) => {
-      checkForUnsupported(args)
-      originalWarn.apply(console, args)
-    }
-    
-    console.error = (...args) => {
-      checkForUnsupported(args)
-      originalError.apply(console, args)
-    }
+    // Fallback: 2秒后如果还没检测到，也尝试渲染 iframe
+    fallbackTimerRef.current = setTimeout(() => {
+      if (!shouldRenderIframe) {
+        console.log('[CustomCollection] Fallback: 2 seconds passed, will render iframe anyway')
+        setShouldRenderIframe(true)
+      }
+    }, 2000)
     
     return () => {
-      console.log = originalLog
-      console.warn = originalWarn
-      console.error = originalError
+      if (observerRef.current) {
+        observerRef.current.disconnect()
+        observerRef.current = null
+      }
+      if (fallbackTimerRef.current) {
+        clearTimeout(fallbackTimerRef.current)
+        fallbackTimerRef.current = null
+      }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isBrowser, collectionPageId, collectionView])
-  
-  const [shouldRenderIframe, setShouldRenderIframe] = useState(false)
 
   // 如果是 map view，使用 iframe 嵌入 Notion 页面
   if (isMapView && collectionPageId && isBrowser) {
@@ -245,11 +310,16 @@ const CustomCollection = (props) => {
     )
   }
 
-  // 如果没有 collectionView 但有 pageId，先渲染原始组件（会触发 unsupported 日志）
-  // 然后通过 console 拦截检测并替换为 iframe
+  // 如果没有 collectionView 但有 pageId，先渲染原始组件并监听 DOM 变化
   if (!collectionView && collectionPageId && isBrowser) {
+    console.log('[CustomCollection] No collectionView but has pageId, setting up detection:', {
+      pageId: collectionPageId,
+      shouldRenderIframe,
+      hasContainer: !!containerRef.current
+    })
+    
     return (
-      <>
+      <div ref={containerRef}>
         {shouldRenderIframe ? (
           <div className="notion-map-view-container" style={{ 
             width: '100%', 
@@ -269,17 +339,17 @@ const CustomCollection = (props) => {
               allowFullScreen
               title="Notion Map View"
               onLoad={() => {
-                console.log('[CustomCollection] Map view iframe loaded successfully')
+                console.log('[CustomCollection] Map view iframe loaded successfully for pageId:', collectionPageId)
               }}
               onError={(e) => {
-                console.error('[CustomCollection] Map view iframe failed to load:', e)
+                console.error('[CustomCollection] Map view iframe failed to load:', e, 'pageId:', collectionPageId)
               }}
             />
           </div>
         ) : (
           <OriginalCollection {...props} />
         )}
-      </>
+      </div>
     )
   }
 
