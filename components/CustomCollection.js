@@ -1,5 +1,5 @@
 import dynamic from 'next/dynamic'
-import { useMemo } from 'react'
+import { useMemo, useEffect, useRef, useState } from 'react'
 import { isBrowser } from '@/lib/utils'
 
 // 导入原始的 Collection 组件
@@ -116,6 +116,31 @@ const CustomCollection = (props) => {
 
   // 检测是否为 map view（支持多种可能的类型名称）
   const isMapView = viewType === 'map' || viewType === 'map_view' || viewType === 'map-view'
+  
+  // 使用 ref 来存储容器元素，用于检测 unsupported view
+  const containerRef = useRef(null)
+  const [shouldRenderIframe, setShouldRenderIframe] = useState(false)
+  
+  // 检测原始组件是否显示 "unsupported collection view"
+  // 只在没有 collectionView 但有 pageId 的情况下检测
+  useEffect(() => {
+    if (!isBrowser || !containerRef.current || !collectionPageId || collectionView) return
+    
+    // 延迟检查，等待原始组件渲染
+    const checkUnsupportedView = setTimeout(() => {
+      const container = containerRef.current
+      if (!container) return
+      
+      // 检查是否有 "unsupported collection view" 的文本或元素
+      const text = container.textContent || ''
+      if (text.includes('unsupported') || text.includes('Unsupported')) {
+        console.log('[CustomCollection] Detected unsupported view, will render iframe')
+        setShouldRenderIframe(true)
+      }
+    }, 1000)
+    
+    return () => clearTimeout(checkUnsupportedView)
+  }, [isBrowser, collectionPageId, collectionView])
 
   // 如果是 map view，使用 iframe 嵌入 Notion 页面
   if (isMapView && collectionPageId && isBrowser) {
@@ -167,6 +192,47 @@ const CustomCollection = (props) => {
       hasCollectionPageId: !!collectionPageId,
       isBrowser
     })
+  }
+
+  // 如果检测到 unsupported view，使用 iframe 嵌入
+  if (shouldRenderIframe && collectionPageId && isBrowser) {
+    console.log('[CustomCollection] Rendering iframe for unsupported view:', collectionPageId)
+    return (
+      <div className="notion-map-view-container" style={{ 
+        width: '100%', 
+        height: '600px',
+        margin: '1rem 0',
+        border: '1px solid var(--fg-color-1)',
+        borderRadius: '4px',
+        overflow: 'hidden'
+      }}>
+        <iframe
+          src={`https://www.notion.so/${collectionPageId}`}
+          style={{
+            width: '100%',
+            height: '100%',
+            border: 'none'
+          }}
+          allowFullScreen
+          title="Notion Map View"
+          onLoad={() => {
+            console.log('[CustomCollection] Map view iframe loaded successfully')
+          }}
+          onError={(e) => {
+            console.error('[CustomCollection] Map view iframe failed to load:', e)
+          }}
+        />
+      </div>
+    )
+  }
+
+  // 如果没有 collectionView 但有 pageId，先渲染原始组件并检测
+  if (!collectionView && collectionPageId && isBrowser) {
+    return (
+      <div ref={containerRef}>
+        <OriginalCollection {...props} />
+      </div>
+    )
   }
 
   // 其他视图类型使用原始组件
