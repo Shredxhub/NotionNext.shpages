@@ -118,9 +118,98 @@ const CustomCollection = (props) => {
   const isMapView = viewType === 'map' || viewType === 'map_view' || viewType === 'map-view'
   
   const [shouldRenderIframe, setShouldRenderIframe] = useState(false)
+  const [viewId, setViewId] = useState(null)
+  const [cspError, setCspError] = useState(false)
+  const [urlAttempt, setUrlAttempt] = useState(1)
+  const [iframeError, setIframeError] = useState(false)
   const containerRef = useRef(null)
   const observerRef = useRef(null)
   const fallbackTimerRef = useRef(null)
+  
+  // 提取 viewId - 从多个来源尝试获取
+  const extractedViewId = useMemo(() => {
+    // 方法1: 从 collectionView 中获取
+    if (collectionView) {
+      const viewKeys = Object.keys(collectionView)
+      if (viewKeys.length > 0) {
+        const vid = viewKeys[0].replace(/-/g, '')
+        if (isBrowser) {
+          console.log('[CustomCollection] Got viewId from collectionView:', vid)
+        }
+        return vid
+      }
+    }
+    
+    // 方法2: 从 props 中查找
+    if (props?.viewIds && props.viewIds.length > 0) {
+      const vid = props.viewIds[0].replace(/-/g, '')
+      if (isBrowser) {
+        console.log('[CustomCollection] Got viewId from props.viewIds:', vid)
+      }
+      return vid
+    }
+    
+    // 方法3: 从 recordMap 中查找 collection_view
+    if (recordMap?.collection_view) {
+      const viewKeys = Object.keys(recordMap.collection_view)
+      if (viewKeys.length > 0) {
+        const vid = viewKeys[0].replace(/-/g, '')
+        if (isBrowser) {
+          console.log('[CustomCollection] Got viewId from recordMap.collection_view:', vid)
+        }
+        return vid
+      }
+    }
+    
+    // 方法4: 从 block 中查找 view_ids
+    if (block?.value?.view_ids && block.value.view_ids.length > 0) {
+      const vid = block.value.view_ids[0].replace(/-/g, '')
+      if (isBrowser) {
+        console.log('[CustomCollection] Got viewId from block.value.view_ids:', vid)
+      }
+      return vid
+    }
+    
+    return null
+  }, [collectionView, props, recordMap, block])
+  
+  // 拦截 console.log 来提取 viewId（从 unsupported collection view 日志中）
+  useEffect(() => {
+    if (!isBrowser || collectionView || viewId) return
+    
+    const originalLog = console.log
+    const originalWarn = console.warn
+    
+    const interceptLog = (method, ...args) => {
+      // 检查是否是 unsupported collection view 日志
+      if (args.length > 0) {
+        const firstArg = args[0]
+        if (typeof firstArg === 'string' && firstArg.includes('unsupported collection view')) {
+          // 查找包含 view 信息的对象
+          for (const arg of args) {
+            if (arg && typeof arg === 'object' && arg.id && arg.type === 'map') {
+              const vid = arg.id.replace(/-/g, '')
+              console.log('[CustomCollection] Extracted viewId from console log:', vid, arg)
+              setViewId(vid)
+              break
+            }
+          }
+        }
+      }
+      method.apply(console, args)
+    }
+    
+    console.log = (...args) => interceptLog(originalLog, ...args)
+    console.warn = (...args) => interceptLog(originalWarn, ...args)
+    
+    return () => {
+      console.log = originalLog
+      console.warn = originalWarn
+    }
+  }, [isBrowser, collectionView, viewId])
+  
+  // 使用提取的 viewId 或从其他来源获取的 viewId
+  const finalViewId = viewId || extractedViewId
   
   // 使用 MutationObserver 监听 DOM 变化，检测 unsupported view
   useEffect(() => {
@@ -130,7 +219,10 @@ const CustomCollection = (props) => {
     const container = containerRef.current
     if (!container) return
     
-    console.log('[CustomCollection] Setting up MutationObserver for unsupported view detection')
+    console.log('[CustomCollection] Setting up MutationObserver for unsupported view detection', {
+      hasViewId: !!finalViewId,
+      viewId: finalViewId
+    })
     
     // 检查函数
     const checkForUnsupported = (target) => {
@@ -226,18 +318,73 @@ const CustomCollection = (props) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isBrowser, collectionPageId, collectionView])
 
+  // 构建 Notion URL 的辅助函数
+  const buildNotionUrl = (pageId, vid = null, attempt = 1) => {
+    const baseUrl = `https://www.notion.so/${pageId}`
+    
+    // 尝试不同的 URL 格式
+    if (attempt === 1 && vid) {
+      // 格式1: 包含 viewId
+      return `${baseUrl}?v=${vid}`
+    } else if (attempt === 2 && vid) {
+      // 格式2: 包含 viewId 和 embed 参数
+      return `${baseUrl}?v=${vid}&embed=true`
+    } else if (attempt === 3) {
+      // 格式3: 只有 embed 参数
+      return `${baseUrl}?embed=true`
+    } else {
+      // 格式4: 基础 URL
+      return baseUrl
+    }
+  }
+
   // 如果是 map view，使用 iframe 嵌入 Notion 页面
   if (isMapView && collectionPageId && isBrowser) {
-    // 构建 Notion 公开页面 URL
-    // 注意：需要将 Notion 页面设置为公开访问
-    const notionPageUrl = `https://www.notion.so/${collectionPageId}`
+    const mapViewUrl = buildNotionUrl(collectionPageId, finalViewId, urlAttempt)
     
     console.log('[CustomCollection] Rendering map view iframe:', {
       viewType,
       collectionPageId,
-      notionPageUrl,
+      viewId: finalViewId,
+      urlAttempt,
+      mapViewUrl,
       props: Object.keys(props)
     })
+    
+    if (cspError || iframeError) {
+      return (
+        <div className="notion-map-view-fallback" style={{
+          width: '100%',
+          padding: '2rem',
+          margin: '1rem 0',
+          border: '1px solid var(--fg-color-1)',
+          borderRadius: '4px',
+          textAlign: 'center',
+          backgroundColor: 'var(--bg-color)'
+        }}>
+          <h3 style={{ marginBottom: '1rem' }}>🗺️ 地图视图</h3>
+          <p style={{ marginBottom: '1.5rem', color: 'var(--fg-color-2)' }}>
+            由于安全限制，地图无法直接嵌入。请点击下方链接在新窗口中查看。
+          </p>
+          <a
+            href={mapViewUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: 'inline-block',
+              padding: '0.75rem 1.5rem',
+              backgroundColor: 'var(--fg-color)',
+              color: 'var(--bg-color)',
+              borderRadius: '4px',
+              textDecoration: 'none',
+              fontWeight: '500'
+            }}
+          >
+            在 Notion 中查看地图 →
+          </a>
+        </div>
+      )
+    }
     
     return (
       <div className="notion-map-view-container" style={{ 
@@ -249,7 +396,8 @@ const CustomCollection = (props) => {
         overflow: 'hidden'
       }}>
         <iframe
-          src={notionPageUrl}
+          key={urlAttempt}
+          src={mapViewUrl}
           style={{
             width: '100%',
             height: '100%',
@@ -258,10 +406,15 @@ const CustomCollection = (props) => {
           allowFullScreen
           title="Notion Map View"
           onLoad={() => {
-            console.log('[CustomCollection] Map view iframe loaded successfully')
+            console.log('[CustomCollection] Map view iframe loaded:', mapViewUrl)
           }}
           onError={(e) => {
-            console.error('[CustomCollection] Map view iframe failed to load:', e)
+            console.error('[CustomCollection] Map view iframe error:', e, 'URL:', mapViewUrl)
+            if (urlAttempt < 4) {
+              setTimeout(() => setUrlAttempt(urlAttempt + 1), 100)
+            } else {
+              setIframeError(true)
+            }
           }}
         />
       </div>
@@ -280,7 +433,52 @@ const CustomCollection = (props) => {
 
   // 如果检测到 unsupported view，使用 iframe 嵌入
   if (shouldRenderIframe && collectionPageId && isBrowser) {
-    console.log('[CustomCollection] Rendering iframe for unsupported view:', collectionPageId)
+    const currentUrl = buildNotionUrl(collectionPageId, finalViewId, urlAttempt)
+    
+    console.log('[CustomCollection] Rendering iframe for unsupported view:', {
+      pageId: collectionPageId,
+      viewId: finalViewId,
+      urlAttempt,
+      currentUrl,
+      cspError
+    })
+    
+    // 如果 CSP 错误，显示替代 UI
+    if (cspError || iframeError) {
+      return (
+        <div className="notion-map-view-fallback" style={{
+          width: '100%',
+          padding: '2rem',
+          margin: '1rem 0',
+          border: '1px solid var(--fg-color-1)',
+          borderRadius: '4px',
+          textAlign: 'center',
+          backgroundColor: 'var(--bg-color)'
+        }}>
+          <h3 style={{ marginBottom: '1rem' }}>🗺️ 地图视图</h3>
+          <p style={{ marginBottom: '1.5rem', color: 'var(--fg-color-2)' }}>
+            由于安全限制，地图无法直接嵌入。请点击下方链接在新窗口中查看。
+          </p>
+          <a
+            href={currentUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: 'inline-block',
+              padding: '0.75rem 1.5rem',
+              backgroundColor: 'var(--fg-color)',
+              color: 'var(--bg-color)',
+              borderRadius: '4px',
+              textDecoration: 'none',
+              fontWeight: '500'
+            }}
+          >
+            在 Notion 中查看地图 →
+          </a>
+        </div>
+      )
+    }
+    
     return (
       <div className="notion-map-view-container" style={{ 
         width: '100%', 
@@ -291,7 +489,8 @@ const CustomCollection = (props) => {
         overflow: 'hidden'
       }}>
         <iframe
-          src={`https://www.notion.so/${collectionPageId}`}
+          key={urlAttempt}
+          src={currentUrl}
           style={{
             width: '100%',
             height: '100%',
@@ -300,10 +499,17 @@ const CustomCollection = (props) => {
           allowFullScreen
           title="Notion Map View"
           onLoad={() => {
-            console.log('[CustomCollection] Map view iframe loaded successfully')
+            console.log('[CustomCollection] Iframe onLoad:', currentUrl)
           }}
           onError={(e) => {
-            console.error('[CustomCollection] Map view iframe failed to load:', e)
+            console.error('[CustomCollection] Iframe onError:', e, 'URL:', currentUrl)
+            if (urlAttempt < 4) {
+              console.log('[CustomCollection] Trying next URL format, attempt:', urlAttempt + 1)
+              setTimeout(() => setUrlAttempt(urlAttempt + 1), 100)
+            } else {
+              console.log('[CustomCollection] All URL attempts failed')
+              setIframeError(true)
+            }
           }}
         />
       </div>
@@ -329,22 +535,61 @@ const CustomCollection = (props) => {
             borderRadius: '4px',
             overflow: 'hidden'
           }}>
-            <iframe
-              src={`https://www.notion.so/${collectionPageId}`}
-              style={{
+            {(cspError || iframeError) ? (
+              <div className="notion-map-view-fallback" style={{
                 width: '100%',
-                height: '100%',
-                border: 'none'
-              }}
-              allowFullScreen
-              title="Notion Map View"
-              onLoad={() => {
-                console.log('[CustomCollection] Map view iframe loaded successfully for pageId:', collectionPageId)
-              }}
-              onError={(e) => {
-                console.error('[CustomCollection] Map view iframe failed to load:', e, 'pageId:', collectionPageId)
-              }}
-            />
+                padding: '2rem',
+                margin: '1rem 0',
+                border: '1px solid var(--fg-color-1)',
+                borderRadius: '4px',
+                textAlign: 'center',
+                backgroundColor: 'var(--bg-color)'
+              }}>
+                <h3 style={{ marginBottom: '1rem' }}>🗺️ 地图视图</h3>
+                <p style={{ marginBottom: '1.5rem', color: 'var(--fg-color-2)' }}>
+                  由于安全限制，地图无法直接嵌入。请点击下方链接在新窗口中查看。
+                </p>
+                <a
+                  href={buildNotionUrl(collectionPageId, finalViewId, 1)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    display: 'inline-block',
+                    padding: '0.75rem 1.5rem',
+                    backgroundColor: 'var(--fg-color)',
+                    color: 'var(--bg-color)',
+                    borderRadius: '4px',
+                    textDecoration: 'none',
+                    fontWeight: '500'
+                  }}
+                >
+                  在 Notion 中查看地图 →
+                </a>
+              </div>
+            ) : (
+              <iframe
+                key={urlAttempt}
+                src={buildNotionUrl(collectionPageId, finalViewId, urlAttempt)}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  border: 'none'
+                }}
+                allowFullScreen
+                title="Notion Map View"
+                onLoad={() => {
+                  console.log('[CustomCollection] Iframe onLoad for pageId:', collectionPageId, 'URL:', buildNotionUrl(collectionPageId, finalViewId, urlAttempt))
+                }}
+                onError={(e) => {
+                  console.error('[CustomCollection] Iframe onError:', e, 'pageId:', collectionPageId)
+                  if (urlAttempt < 4) {
+                    setTimeout(() => setUrlAttempt(urlAttempt + 1), 100)
+                  } else {
+                    setIframeError(true)
+                  }
+                }}
+              />
+            )}
           </div>
         ) : (
           <OriginalCollection {...props} />
