@@ -117,30 +117,49 @@ const CustomCollection = (props) => {
   // 检测是否为 map view（支持多种可能的类型名称）
   const isMapView = viewType === 'map' || viewType === 'map_view' || viewType === 'map-view'
   
-  // 使用 ref 来存储容器元素，用于检测 unsupported view
-  const containerRef = useRef(null)
-  const [shouldRenderIframe, setShouldRenderIframe] = useState(false)
-  
-  // 检测原始组件是否显示 "unsupported collection view"
-  // 只在没有 collectionView 但有 pageId 的情况下检测
+  // 监听控制台的 "unsupported collection view" 消息
   useEffect(() => {
-    if (!isBrowser || !containerRef.current || !collectionPageId || collectionView) return
+    if (!isBrowser || !collectionPageId || collectionView) return
     
-    // 延迟检查，等待原始组件渲染
-    const checkUnsupportedView = setTimeout(() => {
-      const container = containerRef.current
-      if (!container) return
-      
-      // 检查是否有 "unsupported collection view" 的文本或元素
-      const text = container.textContent || ''
-      if (text.includes('unsupported') || text.includes('Unsupported')) {
-        console.log('[CustomCollection] Detected unsupported view, will render iframe')
-        setShouldRenderIframe(true)
+    // 拦截 console.log 来检测 unsupported view
+    const originalLog = console.log
+    const originalWarn = console.warn
+    const originalError = console.error
+    
+    const checkForUnsupported = (args) => {
+      const message = args?.[0]?.toString() || ''
+      if (message.includes('unsupported collection view') || message.includes('Unsupported collection view')) {
+        console.log('[CustomCollection] Detected unsupported view from console, will render iframe')
+        // 使用 setTimeout 避免在渲染过程中更新状态
+        setTimeout(() => {
+          setShouldRenderIframe(true)
+        }, 100)
       }
-    }, 1000)
+    }
     
-    return () => clearTimeout(checkUnsupportedView)
+    console.log = (...args) => {
+      checkForUnsupported(args)
+      originalLog.apply(console, args)
+    }
+    
+    console.warn = (...args) => {
+      checkForUnsupported(args)
+      originalWarn.apply(console, args)
+    }
+    
+    console.error = (...args) => {
+      checkForUnsupported(args)
+      originalError.apply(console, args)
+    }
+    
+    return () => {
+      console.log = originalLog
+      console.warn = originalWarn
+      console.error = originalError
+    }
   }, [isBrowser, collectionPageId, collectionView])
+  
+  const [shouldRenderIframe, setShouldRenderIframe] = useState(false)
 
   // 如果是 map view，使用 iframe 嵌入 Notion 页面
   if (isMapView && collectionPageId && isBrowser) {
@@ -226,12 +245,41 @@ const CustomCollection = (props) => {
     )
   }
 
-  // 如果没有 collectionView 但有 pageId，先渲染原始组件并检测
+  // 如果没有 collectionView 但有 pageId，先渲染原始组件（会触发 unsupported 日志）
+  // 然后通过 console 拦截检测并替换为 iframe
   if (!collectionView && collectionPageId && isBrowser) {
     return (
-      <div ref={containerRef}>
-        <OriginalCollection {...props} />
-      </div>
+      <>
+        {shouldRenderIframe ? (
+          <div className="notion-map-view-container" style={{ 
+            width: '100%', 
+            height: '600px',
+            margin: '1rem 0',
+            border: '1px solid var(--fg-color-1)',
+            borderRadius: '4px',
+            overflow: 'hidden'
+          }}>
+            <iframe
+              src={`https://www.notion.so/${collectionPageId}`}
+              style={{
+                width: '100%',
+                height: '100%',
+                border: 'none'
+              }}
+              allowFullScreen
+              title="Notion Map View"
+              onLoad={() => {
+                console.log('[CustomCollection] Map view iframe loaded successfully')
+              }}
+              onError={(e) => {
+                console.error('[CustomCollection] Map view iframe failed to load:', e)
+              }}
+            />
+          </div>
+        ) : (
+          <OriginalCollection {...props} />
+        )}
+      </>
     )
   }
 
