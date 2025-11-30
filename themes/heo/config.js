@@ -26,7 +26,7 @@ const CONFIG = {
   HEO_HERO_TITLE_LINK: 'https://shredxhub.com',
 
   // 英雄区显示三个置顶分类
-  HEO_HERO_CATEGORY_1: { title: '折扣福利', url: '/collabs' },
+  HEO_HERO_CATEGORY_1: { title: '福利折扣', url: '/collabs' },
   HEO_HERO_CATEGORY_2: { title: '虾滑集锦', url: '/tag/虾滑集锦' },
   HEO_HERO_CATEGORY_3: { title: '实用教程', url: '/tag/实用教程' },
 
