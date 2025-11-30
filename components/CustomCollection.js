@@ -173,38 +173,60 @@ const CustomCollection = (props) => {
     return null
   }, [collectionView, props, recordMap, block])
   
-  // 拦截 console.log 来提取 viewId（从 unsupported collection view 日志中）
+  // 拦截 console 来提取 viewId 和检测 CSP 错误
   useEffect(() => {
-    if (!isBrowser || collectionView || viewId) return
+    if (!isBrowser || collectionView) return
     
     const originalLog = console.log
     const originalWarn = console.warn
+    const originalError = console.error
     
     const interceptLog = (method, ...args) => {
       // 检查是否是 unsupported collection view 日志
-      if (args.length > 0) {
-        const firstArg = args[0]
-        if (typeof firstArg === 'string' && firstArg.includes('unsupported collection view')) {
-          // 查找包含 view 信息的对象
-          for (const arg of args) {
-            if (arg && typeof arg === 'object' && arg.id && arg.type === 'map') {
-              const vid = arg.id.replace(/-/g, '')
-              console.log('[CustomCollection] Extracted viewId from console log:', vid, arg)
-              setViewId(vid)
-              break
-            }
+      let foundUnsupported = false
+      let viewObject = null
+      
+      // 检查所有参数
+      for (const arg of args) {
+        // 检查字符串参数
+        if (typeof arg === 'string') {
+          if (arg.includes('unsupported collection view') || arg.includes('Unsupported collection view')) {
+            foundUnsupported = true
+          }
+          // 检测 CSP 错误
+          if (arg.includes('Content Security Policy') || arg.includes('frame-ancestors') || arg.includes('violates')) {
+            console.log('[CustomCollection] ⚠️ CSP error detected in console')
+            setTimeout(() => setCspError(true), 100)
           }
         }
+        // 检查对象参数（包含 id 和 type: 'map'）
+        if (arg && typeof arg === 'object' && !Array.isArray(arg) && arg.id && arg.type === 'map') {
+          viewObject = arg
+        }
       }
+      
+      // 如果找到 unsupported 消息和 view 对象，提取 viewId
+      if (foundUnsupported && viewObject && !viewId) {
+        const vid = viewObject.id.replace(/-/g, '')
+        console.log('[CustomCollection] ✅ Extracted viewId from console log:', vid, {
+          originalId: viewObject.id,
+          type: viewObject.type,
+          name: viewObject.name
+        })
+        setViewId(vid)
+      }
+      
       method.apply(console, args)
     }
     
     console.log = (...args) => interceptLog(originalLog, ...args)
     console.warn = (...args) => interceptLog(originalWarn, ...args)
+    console.error = (...args) => interceptLog(originalError, ...args)
     
     return () => {
       console.log = originalLog
       console.warn = originalWarn
+      console.error = originalError
     }
   }, [isBrowser, collectionView, viewId])
   
@@ -320,20 +342,25 @@ const CustomCollection = (props) => {
 
   // 构建 Notion URL 的辅助函数
   const buildNotionUrl = (pageId, vid = null, attempt = 1) => {
+    // 尝试从 props 或 recordMap 中获取 workspace
+    // 如果无法获取，使用基础格式
     const baseUrl = `https://www.notion.so/${pageId}`
     
     // 尝试不同的 URL 格式
     if (attempt === 1 && vid) {
-      // 格式1: 包含 viewId
+      // 格式1: 包含 viewId（推荐格式）
       return `${baseUrl}?v=${vid}`
     } else if (attempt === 2 && vid) {
       // 格式2: 包含 viewId 和 embed 参数
       return `${baseUrl}?v=${vid}&embed=true`
-    } else if (attempt === 3) {
-      // 格式3: 只有 embed 参数
+    } else if (attempt === 3 && vid) {
+      // 格式3: 包含 viewId 和 source 参数（类似用户提供的链接）
+      return `${baseUrl}?v=${vid}&source=copy_link`
+    } else if (attempt === 4) {
+      // 格式4: 只有 embed 参数
       return `${baseUrl}?embed=true`
     } else {
-      // 格式4: 基础 URL
+      // 格式5: 基础 URL
       return baseUrl
     }
   }
@@ -410,7 +437,7 @@ const CustomCollection = (props) => {
           }}
           onError={(e) => {
             console.error('[CustomCollection] Map view iframe error:', e, 'URL:', mapViewUrl)
-            if (urlAttempt < 4) {
+            if (urlAttempt < 5) {
               setTimeout(() => setUrlAttempt(urlAttempt + 1), 100)
             } else {
               setIframeError(true)
@@ -499,11 +526,40 @@ const CustomCollection = (props) => {
           allowFullScreen
           title="Notion Map View"
           onLoad={() => {
-            console.log('[CustomCollection] Iframe onLoad:', currentUrl)
+            console.log('[CustomCollection] Iframe onLoad event triggered:', currentUrl)
+            // 延迟检查 iframe 内容是否真的加载了（CSP 可能不会触发 onError）
+            setTimeout(() => {
+              try {
+                const iframes = document.querySelectorAll('iframe[title="Notion Map View"]')
+                const currentIframe = Array.from(iframes).find(iframe => iframe.src === currentUrl)
+                if (currentIframe) {
+                  try {
+                    // 尝试访问 iframe 内容
+                    const doc = currentIframe.contentWindow?.document
+                    if (!doc || (doc.location && doc.location.href === 'about:blank')) {
+                      console.warn('[CustomCollection] Iframe content is blank, possible CSP block')
+                      setCspError(true)
+                      return
+                    }
+                    console.log('[CustomCollection] ✅ Iframe content loaded successfully')
+                  } catch (e) {
+                    // 跨域错误是正常的，但如果是 CSP 错误会有特定消息
+                    if (e.message && (e.message.includes('Blocked') || e.message.includes('frame'))) {
+                      console.warn('[CustomCollection] ⚠️ Possible CSP error:', e.message)
+                      setCspError(true)
+                    } else {
+                      console.log('[CustomCollection] Cross-origin access (expected):', e.message)
+                    }
+                  }
+                }
+              } catch (err) {
+                console.warn('[CustomCollection] Error checking iframe:', err)
+              }
+            }, 2000)
           }}
           onError={(e) => {
             console.error('[CustomCollection] Iframe onError:', e, 'URL:', currentUrl)
-            if (urlAttempt < 4) {
+            if (urlAttempt < 5) {
               console.log('[CustomCollection] Trying next URL format, attempt:', urlAttempt + 1)
               setTimeout(() => setUrlAttempt(urlAttempt + 1), 100)
             } else {
@@ -578,13 +634,45 @@ const CustomCollection = (props) => {
                 allowFullScreen
                 title="Notion Map View"
                 onLoad={() => {
-                  console.log('[CustomCollection] Iframe onLoad for pageId:', collectionPageId, 'URL:', buildNotionUrl(collectionPageId, finalViewId, urlAttempt))
+                  const currentUrl = buildNotionUrl(collectionPageId, finalViewId, urlAttempt)
+                  console.log('[CustomCollection] Iframe onLoad event triggered for pageId:', collectionPageId, 'URL:', currentUrl)
+                  // 延迟检查 iframe 内容是否真的加载了（CSP 可能不会触发 onError）
+                  setTimeout(() => {
+                    try {
+                      const iframes = document.querySelectorAll('iframe[title="Notion Map View"]')
+                      const currentIframe = Array.from(iframes).find(iframe => iframe.src === currentUrl)
+                      if (currentIframe) {
+                        try {
+                          // 尝试访问 iframe 内容
+                          const doc = currentIframe.contentWindow?.document
+                          if (!doc || (doc.location && doc.location.href === 'about:blank')) {
+                            console.warn('[CustomCollection] Iframe content is blank, possible CSP block')
+                            setCspError(true)
+                            return
+                          }
+                          console.log('[CustomCollection] ✅ Iframe content loaded successfully')
+                        } catch (e) {
+                          // 跨域错误是正常的，但如果是 CSP 错误会有特定消息
+                          if (e.message && (e.message.includes('Blocked') || e.message.includes('frame'))) {
+                            console.warn('[CustomCollection] ⚠️ Possible CSP error:', e.message)
+                            setCspError(true)
+                          } else {
+                            console.log('[CustomCollection] Cross-origin access (expected):', e.message)
+                          }
+                        }
+                      }
+                    } catch (err) {
+                      console.warn('[CustomCollection] Error checking iframe:', err)
+                    }
+                  }, 2000)
                 }}
                 onError={(e) => {
                   console.error('[CustomCollection] Iframe onError:', e, 'pageId:', collectionPageId)
-                  if (urlAttempt < 4) {
+                  if (urlAttempt < 5) {
+                    console.log('[CustomCollection] Trying next URL format, attempt:', urlAttempt + 1)
                     setTimeout(() => setUrlAttempt(urlAttempt + 1), 100)
                   } else {
+                    console.log('[CustomCollection] All URL attempts failed')
                     setIframeError(true)
                   }
                 }}
