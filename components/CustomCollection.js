@@ -117,6 +117,23 @@ const CustomCollection = (props) => {
   // 检测是否为 map view（支持多种可能的类型名称）
   const isMapView = viewType === 'map' || viewType === 'map_view' || viewType === 'map-view'
   
+  // 提取 workspace 名称
+  const workspace = useMemo(() => {
+    // 方法1: 从 blog.config.js 配置中获取（如果存在）
+    // 方法2: 从 recordMap 中提取（如果存在）
+    // 方法3: 从 props 中提取（如果存在）
+    // 方法4: 使用默认值 'shredxhub'
+    
+    // 暂时使用默认值，后续可以从配置或数据中提取
+    const defaultWorkspace = 'shredxhub'
+    
+    if (isBrowser) {
+      console.log('[CustomCollection] Using workspace:', defaultWorkspace)
+    }
+    
+    return defaultWorkspace
+  }, [isBrowser])
+  
   const [shouldRenderIframe, setShouldRenderIframe] = useState(false)
   const [viewId, setViewId] = useState(null)
   const [cspError, setCspError] = useState(false)
@@ -341,38 +358,59 @@ const CustomCollection = (props) => {
   }, [isBrowser, collectionPageId, collectionView])
 
   // 构建 Notion URL 的辅助函数
-  const buildNotionUrl = (pageId, vid = null, attempt = 1) => {
-    // 尝试从 props 或 recordMap 中获取 workspace
-    // 如果无法获取，使用基础格式
-    const baseUrl = `https://www.notion.so/${pageId}`
+  const buildNotionUrl = (pageId, vid = null, attempt = 1, ws = null) => {
+    const workspaceName = ws || workspace
+    // 构建包含 workspace 的基础 URL
+    const baseUrl = `https://www.notion.so/${workspaceName}/${pageId}`
+    const baseUrlWithoutWorkspace = `https://www.notion.so/${pageId}`
     
-    // 尝试不同的 URL 格式
+    let finalUrl = ''
+    
+    // 尝试不同的 URL 格式（按优先级）
     if (attempt === 1 && vid) {
-      // 格式1: 包含 viewId（推荐格式）
-      return `${baseUrl}?v=${vid}`
+      // 格式1: 包含 workspace、viewId 和 source 参数（用户提供的格式）
+      finalUrl = `${baseUrl}?v=${vid}&source=copy_link`
     } else if (attempt === 2 && vid) {
-      // 格式2: 包含 viewId 和 embed 参数
-      return `${baseUrl}?v=${vid}&embed=true`
+      // 格式2: 包含 workspace、viewId 和 embed 参数
+      finalUrl = `${baseUrl}?v=${vid}&embed=true`
     } else if (attempt === 3 && vid) {
-      // 格式3: 包含 viewId 和 source 参数（类似用户提供的链接）
-      return `${baseUrl}?v=${vid}&source=copy_link`
+      // 格式3: 包含 workspace 和 viewId
+      finalUrl = `${baseUrl}?v=${vid}`
     } else if (attempt === 4) {
-      // 格式4: 只有 embed 参数
-      return `${baseUrl}?embed=true`
+      // 格式4: 包含 workspace 和 embed 参数
+      finalUrl = `${baseUrl}?embed=true`
+    } else if (attempt === 5) {
+      // 格式5: 包含 workspace 的基础 URL
+      finalUrl = baseUrl
+    } else if (attempt === 6 && vid) {
+      // 格式6: 无 workspace，包含 viewId（fallback）
+      finalUrl = `${baseUrlWithoutWorkspace}?v=${vid}`
     } else {
-      // 格式5: 基础 URL
-      return baseUrl
+      // 格式7: 无 workspace 的基础 URL（最后 fallback）
+      finalUrl = baseUrlWithoutWorkspace
     }
+    
+    if (isBrowser) {
+      console.log(`[CustomCollection] Built URL (attempt ${attempt}):`, finalUrl, {
+        workspace: workspaceName,
+        pageId,
+        viewId: vid,
+        attempt
+      })
+    }
+    
+    return finalUrl
   }
 
   // 如果是 map view，使用 iframe 嵌入 Notion 页面
   if (isMapView && collectionPageId && isBrowser) {
-    const mapViewUrl = buildNotionUrl(collectionPageId, finalViewId, urlAttempt)
+    const mapViewUrl = buildNotionUrl(collectionPageId, finalViewId, urlAttempt, workspace)
     
     console.log('[CustomCollection] Rendering map view iframe:', {
       viewType,
       collectionPageId,
       viewId: finalViewId,
+      workspace,
       urlAttempt,
       mapViewUrl,
       props: Object.keys(props)
@@ -437,9 +475,11 @@ const CustomCollection = (props) => {
           }}
           onError={(e) => {
             console.error('[CustomCollection] Map view iframe error:', e, 'URL:', mapViewUrl)
-            if (urlAttempt < 5) {
+            if (urlAttempt < 7) {
+              console.log('[CustomCollection] Trying next URL format, attempt:', urlAttempt + 1)
               setTimeout(() => setUrlAttempt(urlAttempt + 1), 100)
             } else {
+              console.log('[CustomCollection] All URL attempts failed')
               setIframeError(true)
             }
           }}
@@ -460,11 +500,12 @@ const CustomCollection = (props) => {
 
   // 如果检测到 unsupported view，使用 iframe 嵌入
   if (shouldRenderIframe && collectionPageId && isBrowser) {
-    const currentUrl = buildNotionUrl(collectionPageId, finalViewId, urlAttempt)
+    const currentUrl = buildNotionUrl(collectionPageId, finalViewId, urlAttempt, workspace)
     
     console.log('[CustomCollection] Rendering iframe for unsupported view:', {
       pageId: collectionPageId,
       viewId: finalViewId,
+      workspace,
       urlAttempt,
       currentUrl,
       cspError
@@ -606,7 +647,7 @@ const CustomCollection = (props) => {
                   由于安全限制，地图无法直接嵌入。请点击下方链接在新窗口中查看。
                 </p>
                 <a
-                  href={buildNotionUrl(collectionPageId, finalViewId, 1)}
+                  href={buildNotionUrl(collectionPageId, finalViewId, 1, workspace)}
                   target="_blank"
                   rel="noopener noreferrer"
                   style={{
@@ -625,7 +666,7 @@ const CustomCollection = (props) => {
             ) : (
               <iframe
                 key={urlAttempt}
-                src={buildNotionUrl(collectionPageId, finalViewId, urlAttempt)}
+                src={buildNotionUrl(collectionPageId, finalViewId, urlAttempt, workspace)}
                 style={{
                   width: '100%',
                   height: '100%',
@@ -634,8 +675,8 @@ const CustomCollection = (props) => {
                 allowFullScreen
                 title="Notion Map View"
                 onLoad={() => {
-                  const currentUrl = buildNotionUrl(collectionPageId, finalViewId, urlAttempt)
-                  console.log('[CustomCollection] Iframe onLoad event triggered for pageId:', collectionPageId, 'URL:', currentUrl)
+                  const currentUrl = buildNotionUrl(collectionPageId, finalViewId, urlAttempt, workspace)
+                  console.log('[CustomCollection] Iframe onLoad event triggered for pageId:', collectionPageId, 'workspace:', workspace, 'URL:', currentUrl)
                   // 延迟检查 iframe 内容是否真的加载了（CSP 可能不会触发 onError）
                   setTimeout(() => {
                     try {
@@ -667,12 +708,12 @@ const CustomCollection = (props) => {
                   }, 2000)
                 }}
                 onError={(e) => {
-                  console.error('[CustomCollection] Iframe onError:', e, 'pageId:', collectionPageId)
-                  if (urlAttempt < 5) {
-                    console.log('[CustomCollection] Trying next URL format, attempt:', urlAttempt + 1)
+                  console.error('[CustomCollection] Iframe onError:', e, 'pageId:', collectionPageId, 'workspace:', workspace)
+                  if (urlAttempt < 7) {
+                    console.log('[CustomCollection] Trying next URL format, attempt:', urlAttempt + 1, 'of 7')
                     setTimeout(() => setUrlAttempt(urlAttempt + 1), 100)
                   } else {
-                    console.log('[CustomCollection] All URL attempts failed')
+                    console.log('[CustomCollection] All URL attempts failed (7 attempts)')
                     setIframeError(true)
                   }
                 }}
