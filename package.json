@@ -24,6 +24,8 @@
     "bundle-report": "cross-env ANALYZE=true next build",
     "build-all-in-dev": "cross-env VERCEL_ENV=production next build",
     "version": "echo $npm_package_version",
+    "sync": "git fetch origin && git pull origin shredxhub.com",
+    "sync-upstream": "sync-from-notionnext.bat",
     "lint": "next lint",
     "lint:fix": "next lint --fix",
     "type-check": "tsc --noEmit",
